@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    Adaptive launcher icon for DOOMCOUNT.
+    Foreground: a simple "D" monogram on a transparent layer.
+    Background: solid dark red (#B71C1C).
+    This is a minimal placeholder for the prototype.
+    Replace with final artwork before release.
+-->
+<adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">
+    <background android:drawable="@color/ic_launcher_background" />
+    <foreground android:drawable="@drawable/ic_launcher_foreground" />
+</adaptive-icon>
+

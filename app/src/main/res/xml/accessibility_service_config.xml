@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    Accessibility Service Configuration for DOOMCOUNT prototype.
+
+    packageNames: Only TikTok is observed in this prototype.
+    accessibilityEventTypes:
+      - typeWindowStateChanged   : Fired when the active window changes (e.g. navigating between screens).
+      - typeWindowContentChanged : Fired when window content is updated (e.g. new video loaded in feed).
+      - typeViewScrolled         : Fired when a scrollable view is scrolled.
+      - typeViewClicked          : Fired when a view is clicked (for navigation button detection).
+      NOTE: We do NOT include typeViewTextChanged to avoid capturing typed text.
+
+    feedbackType: typeGeneric — we consume events for counting only; no audio/haptic feedback.
+    canRetrieveWindowContent: false — we do NOT need to read window content/text for counting.
+    notificationTimeout: 100ms — debounce rapid successive events.
+-->
+<accessibility-service
+    xmlns:android="http://schemas.android.com/apk/res/android"
+    android:accessibilityEventTypes="typeWindowStateChanged|typeWindowContentChanged|typeViewScrolled|typeViewClicked"
+    android:accessibilityFeedbackType="feedbackGeneric"
+    android:accessibilityFlags=""
+    android:canRetrieveWindowContent="false"
+    android:description="@string/accessibility_service_description"
+    android:notificationTimeout="100"
+    android:packageNames="com.zhiliaoapp.musically,com.ss.android.ugc.trill" />

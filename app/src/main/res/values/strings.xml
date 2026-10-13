@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">DOOMCOUNT</string>
+
+    <!-- Accessibility Service metadata -->
+    <string name="accessibility_service_label">DOOMCOUNT — Video Transition Detector</string>
+    <string name="accessibility_service_description">DOOMCOUNT detects navigation changes in the apps you select to estimate short-video transitions. It does not read message contents, capture screenshots, or record audio. You can disable this service at any time in Android Settings.</string>
+
+    <!-- UI strings -->
+    <string name="prototype_title">DOOMCOUNT Prototype</string>
+    <string name="prototype_subtitle">Detection Feasibility Spike</string>
+    <string name="service_status_enabled">Accessibility Service: ENABLED</string>
+    <string name="service_status_disabled">Accessibility Service: DISABLED</string>
+    <string name="enable_service_button">Enable in Settings</string>
+    <string name="event_count_label">Detected Events (this session)</string>
+    <string name="window_events_label">Window State Changes</string>
+    <string name="scroll_events_label">Scroll Events</string>
+    <string name="content_events_label">Content Changed Events</string>
+    <string name="tiktok_active_label">TikTok in foreground</string>
+    <string name="tiktok_inactive_label">TikTok not active</string>
+    <string name="prototype_explanation">This prototype investigates whether Android Accessibility events can reliably distinguish short-video feed transitions in TikTok. Raw event counts are shown below — no counts are yet claimed to represent real video swipes.</string>
+    <string name="privacy_note">Privacy: only event type, package name, and timestamp are observed. No video content, messages, or text are captured.</string>
+    <string name="how_to_enable_title">How to enable</string>
+    <string name="how_to_enable_steps">1. Tap \"Enable in Settings\" below.\n2. Find \"DOOMCOUNT\" in the list.\n3. Toggle \"Use DOOMCOUNT\" on.\n4. Return to this screen.</string>
+</resources>

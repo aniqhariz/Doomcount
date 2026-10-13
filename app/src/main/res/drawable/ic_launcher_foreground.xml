@@ -1,0 +1,61 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    Launcher icon foreground — a "D" letterform built from pure path data.
+    Vector drawables support only <path>, <group>, <clip-path>, and <aapt:attr>.
+    No <text> elements are allowed. This is a prototype placeholder.
+    Replace with final logo artwork before release.
+
+    Viewport: 108x108 (standard adaptive icon canvas).
+    Safe zone: 72x72 centered (18dp inset each side). All paths stay within this zone.
+
+    The "D" shape:
+      - Outer rectangle: x=30, y=22, w=12, h=64  (the vertical stroke)
+      - Rounded cap: a half-ellipse from (42,22) curving right to (42,86)
+        with the rightmost point at roughly x=78, y=54
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+
+    <!-- Dark red background fill (matches ic_launcher_background color) -->
+    <path
+        android:fillColor="#B71C1C"
+        android:pathData="M0,0 L108,0 L108,108 L0,108 Z" />
+
+    <!--
+        White "D" glyph.
+        Constructed as a filled outer D minus an inner cutout (even-odd or two paths).
+        Outer D path: left stem + right curved cap.
+        M 30,22           move to top-left of stem
+        L 30,86           down the left side
+        L 45,86           across the bottom of stem to curve start
+        C 72,86 80,72 80,54   cubic bezier: curve right side bottom
+        C 80,36 72,22 45,22   cubic bezier: curve right side top
+        Z                 close (back to M 30,22)
+
+        Inner cutout (makes the D hollow inside so it looks like a letter):
+        M 42,32
+        L 42,76
+        C 62,76 70,66 70,54
+        C 70,42 62,32 42,32
+        Z
+    -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:fillType="evenOdd"
+        android:pathData="
+            M 30,22
+            L 30,86
+            L 45,86
+            C 72,86 80,72 80,54
+            C 80,36 72,22 45,22
+            Z
+            M 42,32
+            L 42,76
+            C 62,76 70,66 70,54
+            C 70,42 62,32 42,32
+            Z" />
+
+</vector>
