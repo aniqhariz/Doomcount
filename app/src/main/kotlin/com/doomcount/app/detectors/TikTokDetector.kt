@@ -5,26 +5,36 @@ import android.view.accessibility.AccessibilityEvent
 import kotlin.math.abs
 
 /**
- * TikTokDetector — experimental heuristic for detecting confirmed short-video feed transitions.
+ * TikTokDetector — transition detector for TikTok feeds via accessibility events.
  *
  * ## Problem Addressed (Canceled Swipe False Positives):
- * Previous iterations incremented the transition count on the LEADING EDGE of a scroll burst
- * (the very first scroll event). When a user initiated a vertical swipe but released early or
- * dragged back, TikTok snapped back to the original video. Because scroll events had occurred,
- * the detector falsely counted a transition.
+ * Previous iterations incremented the transition count prematurely or failed to reject
+ * canceled swipes because:
+ * 1. Container item index (`fromIndex`) was ignored whenever vertical displacement exceeded
+ *    the arbitrary 120px threshold, confirming transitions even when the pager snapped back
+ *    to the exact same video item.
+ * 2. Background UI updates (`TYPE_WINDOW_CONTENT_CHANGED`) emitted when touching the screen
+ *    or pausing playback were falsely treated as proof that a new video loaded.
+ * 3. Smooth animator snap-backs often omitted reverse scroll events, evading the reversal check.
+ * 4. Settlement timestamp recording used wall-clock `now` at settlement time rather than
+ *    the gesture's completion timestamp, causing cadence debouncing distortions.
  *
  * ## Solution: Two-Phase Confirmation Architecture
- * 1. Phase 1 (Gesture Inception): A vertical scroll burst initiates a [DetectionResult.TransitionCandidate].
+ * 1. Phase 1 (Gesture Inception): A vertical scroll initiates a [DetectionResult.TransitionCandidate].
  *    The transition is NOT counted yet. Motion metrics (forward vs. reverse displacement, deltas)
  *    and feed content changes are recorded during the gesture.
  * 2. Phase 2 (Settlement Evaluation): Once the gesture settles (quiescence window of [SETTLEMENT_WINDOW_MS]):
- *    - If snap-back reversal occurred (user pulled forward, then released and pager snapped back in
- *      the opposite direction): CANCELED.
- *    - If net vertical displacement is insufficient to cross the page boundary: CANCELED.
+ *    - In non-feed screen (comments, profile, search, dialogs): CANCELED / REJECTED.
  *    - If horizontal displacement dominates: REJECTED.
- *    - If no content changes or index changes occurred: CANCELED.
- *    - Only if unidirectional displacement, feed content updates, and no snap-back are confirmed:
- *      [DetectionResult.TransitionConfirmed] is emitted and the counter increments exactly once.
+ *    - Container item index evidence (when available):
+ *        * If start index == last index: definitively CANCELED (feed remained on the same video).
+ *        * If start index != last index: CONFIRMED (feed advanced forward or reversed to another video).
+ *    - Motion heuristics (when container index is unavailable):
+ *        * Snap-back reversal detected: CANCELED.
+ *        * Net vertical displacement insufficient: CANCELED.
+ *        * Zero feed content updates: CANCELED.
+ *        * Net displacement dominated by unidirectional travel with content updates: CONFIRMED.
+ *    - Counter increments exactly once on [DetectionResult.TransitionConfirmed].
  */
 class TikTokDetector {
 
@@ -46,20 +56,21 @@ class TikTokDetector {
         const val SETTLEMENT_WINDOW_MS = 450L
 
         /**
-         * Minimum interval (in ms) between two distinct confirmed video transitions.
+         * Minimum interval (in ms) between the conclusion of one transition and the start
+         * of another distinct transition to prevent duplicate bursts from the same swipe.
          */
-        const val MIN_TRANSITION_INTERVAL_MS = 600L
+        const val MIN_TRANSITION_INTERVAL_MS = 350L
 
         /**
          * Minimum net vertical displacement (in pixels) required to confirm a page turn
-         * when scroll deltas are available. On a 1080x2400 screen, crossing the feed boundary
-         * typically requires substantial net vertical travel.
+         * when scroll deltas are available and container indices are not reported.
          */
-        const val MIN_NET_VERTICAL_DISPLACEMENT = 120
+        const val MIN_NET_VERTICAL_DISPLACEMENT = 150
 
         /**
          * Ratio threshold for detecting snap-back reversal.
          * If reverse displacement exceeds 35% of forward displacement and is at least 60px,
+         * or if net displacement is less than 50% of gross displacement with >= 40px reversal,
          * the view snapped back toward or to the original video.
          */
         const val REVERSAL_RATIO_THRESHOLD = 0.35f
@@ -156,35 +167,77 @@ class TikTokDetector {
     }
 
     /**
-     * Evaluates an incoming accessibility event from TikTok.
+     * Android AccessibilityService entry point. Safely extracts event metadata
+     * and delegates to the platform-independent [evaluate(FeedEvent)].
      */
     fun evaluate(event: AccessibilityEvent): DetectionResult {
-        val pkg = event.packageName?.toString() ?: return DetectionResult.NoSignal
+        val deltaX = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P &&
+            event.eventType == AccessibilityEvent.TYPE_VIEW_SCROLLED
+        ) {
+            event.scrollDeltaX
+        } else {
+            0
+        }
+        val deltaY = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P &&
+            event.eventType == AccessibilityEvent.TYPE_VIEW_SCROLLED
+        ) {
+            event.scrollDeltaY
+        } else {
+            0
+        }
+        val changeTypes = if (event.eventType == AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED) {
+            event.contentChangeTypes
+        } else {
+            0
+        }
+
+        return evaluate(
+            FeedEvent(
+                eventType = event.eventType,
+                packageName = event.packageName?.toString(),
+                className = event.className?.toString(),
+                eventTime = event.eventTime.takeIf { it > 0 } ?: System.currentTimeMillis(),
+                scrollDeltaX = deltaX,
+                scrollDeltaY = deltaY,
+                fromIndex = event.fromIndex,
+                toIndex = event.toIndex,
+                itemCount = event.itemCount,
+                contentChangeTypes = changeTypes
+            )
+        )
+    }
+
+    /**
+     * Evaluates a platform-independent [FeedEvent].
+     * Isolated from Android-specific APIs for deterministic JVM unit testing.
+     */
+    fun evaluate(event: FeedEvent): DetectionResult {
+        val pkg = event.packageName ?: return DetectionResult.NoSignal
         if (pkg !in TIKTOK_PACKAGES) {
             return DetectionResult.NoSignal
         }
 
-        val now = System.currentTimeMillis()
+        val eventTime = event.eventTime
 
         return when (event.eventType) {
-            AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED -> {
+            FeedEvent.TYPE_WINDOW_STATE_CHANGED -> {
                 evaluateWindowStateChanged(event)
             }
 
-            AccessibilityEvent.TYPE_VIEW_SCROLLED -> {
-                evaluateScrollEvent(event, now)
+            FeedEvent.TYPE_VIEW_SCROLLED -> {
+                evaluateScrollEvent(event, eventTime)
             }
 
-            AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED -> {
-                evaluateContentChanged(event, now)
+            FeedEvent.TYPE_WINDOW_CONTENT_CHANGED -> {
+                evaluateContentChanged(event)
             }
 
             else -> DetectionResult.NoSignal
         }
     }
 
-    private fun evaluateWindowStateChanged(event: AccessibilityEvent): DetectionResult {
-        val className = event.className?.toString() ?: ""
+    private fun evaluateWindowStateChanged(event: FeedEvent): DetectionResult {
+        val className = event.className ?: ""
         currentScreenClassName = className
 
         val isNonFeed = NON_FEED_CLASS_HINTS.any { hint ->
@@ -210,14 +263,10 @@ class TikTokDetector {
         return DetectionResult.NoSignal
     }
 
-    private fun evaluateScrollEvent(event: AccessibilityEvent, now: Long): DetectionResult {
-        val className = event.className?.toString() ?: ""
-
-        val (dx, dy) = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
-            Pair(event.scrollDeltaX, event.scrollDeltaY)
-        } else {
-            Pair(0, 0)
-        }
+    private fun evaluateScrollEvent(event: FeedEvent, eventTime: Long): DetectionResult {
+        val className = event.className ?: ""
+        val dx = event.scrollDeltaX
+        val dy = event.scrollDeltaY
 
         // Screen-level check
         if (isInNonFeedScreen) {
@@ -232,11 +281,11 @@ class TikTokDetector {
         val candidate = activeCandidate
 
         // Check if this scroll event belongs to the active burst
-        if (candidate != null && !candidate.isSettled && (now - candidate.lastEventTimeMs) < BURST_QUIESCENCE_MS) {
+        if (candidate != null && !candidate.isSettled && (eventTime - candidate.lastEventTimeMs) < BURST_QUIESCENCE_MS) {
             // Absorbed into current burst
             candidate.scrollEventCount++
-            candidate.lastEventTimeMs = now
-            lastScrollEventMs = now
+            candidate.lastEventTimeMs = eventTime
+            lastScrollEventMs = eventTime
 
             candidate.accumulatedDx += abs(dx)
 
@@ -250,19 +299,30 @@ class TikTokDetector {
                     candidate.forwardDisplacement += abs(dy)
                 } else {
                     candidate.reverseDisplacement += abs(dy)
-                    if (candidate.reverseDisplacement >= 50) {
+                    if (candidate.reverseDisplacement >= 40) {
                         candidate.isReversalDetected = true
                     }
                 }
             }
 
             // Update item index if reported by the container
-            if (event.fromIndex >= 0) candidate.lastFromIndex = event.fromIndex
-            if (event.toIndex >= 0) candidate.lastToIndex = event.toIndex
+            if (event.fromIndex >= 0) {
+                if (candidate.startFromIndex < 0) {
+                    candidate.startFromIndex = event.fromIndex
+                }
+                candidate.lastFromIndex = event.fromIndex
+            }
+            if (event.toIndex >= 0) {
+                if (candidate.startToIndex < 0) {
+                    candidate.startToIndex = event.toIndex
+                }
+                candidate.lastToIndex = event.toIndex
+            }
             if (event.itemCount >= 0) candidate.itemCount = event.itemCount
 
-            val duration = now - candidate.startTimeMs
-            lastBurstSummary = "Burst #${candidate.burstId}: ${candidate.scrollEventCount} scrolls over ${duration}ms (fwd=${candidate.forwardDisplacement}px, rev=${candidate.reverseDisplacement}px, net=${candidate.netDisplacement}px)"
+            val duration = eventTime - candidate.startTimeMs
+            lastBurstSummary = "Burst #${candidate.burstId}: ${candidate.scrollEventCount} scrolls over ${duration}ms " +
+                    "(fwd=${candidate.forwardDisplacement}px, rev=${candidate.reverseDisplacement}px, net=${candidate.netDisplacement}px)"
 
             return DetectionResult.AbsorbedInBurst(
                 burstId = candidate.burstId,
@@ -273,7 +333,7 @@ class TikTokDetector {
         // If a previous candidate exists and hasn't been settled yet, settle it before starting a new burst
         var priorSettlementResult: DetectionResult? = null
         if (candidate != null && !candidate.isSettled) {
-            priorSettlementResult = settleCandidate(candidate, now)
+            priorSettlementResult = settleCandidate(candidate, eventTime)
         }
 
         // Check horizontal swipe on burst inception
@@ -282,8 +342,8 @@ class TikTokDetector {
             return priorSettlementResult ?: DetectionResult.RejectedSignal("Horizontal scroll detected: dx=$dx, dy=$dy")
         }
 
-        // Check transition cadence debounce
-        val timeSinceLastTransition = now - lastConfirmedTransitionMs
+        // Check transition cadence debounce from the end of the previous transition
+        val timeSinceLastTransition = eventTime - lastConfirmedTransitionMs
         if (timeSinceLastTransition < MIN_TRANSITION_INTERVAL_MS && lastConfirmedTransitionMs > 0) {
             lastBurstSummary = "Burst #$nextBurstId [DEBOUNCED]: Rapid swipe ${timeSinceLastTransition}ms after previous transition"
             return priorSettlementResult ?: DetectionResult.AbsorbedInBurst(
@@ -297,8 +357,8 @@ class TikTokDetector {
         val initDir = if (dy != 0) (if (dy > 0) 1 else -1) else 0
         val newCandidate = CandidateBurst(
             burstId = burstId,
-            startTimeMs = now,
-            lastEventTimeMs = now,
+            startTimeMs = eventTime,
+            lastEventTimeMs = eventTime,
             containerClassName = className,
             scrollEventCount = 1,
             initialDirection = initDir,
@@ -313,7 +373,7 @@ class TikTokDetector {
         )
 
         activeCandidate = newCandidate
-        lastScrollEventMs = now
+        lastScrollEventMs = eventTime
 
         lastBurstSummary = "Burst #$burstId [CANDIDATE]: Gesture started in $className (dy=$dy)"
         lastDecisionSummary = "Burst #$burstId: Candidate created — gathering evidence..."
@@ -327,11 +387,11 @@ class TikTokDetector {
         )
     }
 
-    private fun evaluateContentChanged(event: AccessibilityEvent, now: Long): DetectionResult {
+    private fun evaluateContentChanged(event: FeedEvent): DetectionResult {
         activeCandidate?.let { candidate ->
             if (!candidate.isSettled) {
                 candidate.contentChangeCount++
-                if ((event.contentChangeTypes and AccessibilityEvent.CONTENT_CHANGE_TYPE_SUBTREE) != 0) {
+                if ((event.contentChangeTypes and FeedEvent.CONTENT_CHANGE_TYPE_SUBTREE) != 0) {
                     candidate.hasSubtreeContentChange = true
                 }
             }
@@ -353,13 +413,64 @@ class TikTokDetector {
         candidate.isSettled = true
         val duration = candidate.lastEventTimeMs - candidate.startTimeMs
 
-        // ── Rule 1: Snap-back reversal (Canceled Swipe) ──────────────────────────
-        // If the gesture moved forward and then snapped back in the opposite direction
+        // ── Rule 1: Screen State & Container Verification ───────────────────────
+        if (isInNonFeedScreen || NON_FEED_CLASS_HINTS.any { candidate.containerClassName.contains(it, ignoreCase = true) }) {
+            val reason = "Rejected: In non-feed screen or container (${candidate.containerClassName})"
+            lastDecisionSummary = "Burst #${candidate.burstId} REJECTED: Non-feed screen"
+            return DetectionResult.TransitionCanceled(candidate.burstId, reason)
+        }
+
+        // ── Rule 2: Directional Dominance (Vertical vs Horizontal) ──────────────
+        if (candidate.accumulatedDx > abs(candidate.netDisplacement) * 1.3 && candidate.accumulatedDx > 80) {
+            val reason = "Rejected: Horizontal displacement dominated (dx=${candidate.accumulatedDx}px, netDy=${candidate.netDisplacement}px)"
+            lastDecisionSummary = "Burst #${candidate.burstId} REJECTED: Horizontal motion"
+            return DetectionResult.TransitionCanceled(candidate.burstId, reason)
+        }
+
+        // ── Rule 3: Container Index Ground Truth (Definitive Evidence) ──────────
+        // When the container reports item index bounds (fromIndex/toIndex):
+        val hasValidIndices = candidate.startFromIndex >= 0 && candidate.lastFromIndex >= 0
+        if (hasValidIndices) {
+            if (candidate.startFromIndex == candidate.lastFromIndex) {
+                // The pager returned to or stayed on the exact same item.
+                // This is definitive evidence that the gesture was canceled or snapped back.
+                val reason = "Canceled gesture: Container item index remained unchanged (index=${candidate.startFromIndex})"
+                lastDecisionSummary = "Burst #${candidate.burstId} CANCELED: Returned to same item (${candidate.startFromIndex})"
+                return DetectionResult.TransitionCanceled(
+                    burstId = candidate.burstId,
+                    reason = reason
+                )
+            } else {
+                // The item index explicitly changed (e.g., 0 -> 1 for forward, or 5 -> 4 for reverse swipe).
+                // Confirm transition!
+                lastConfirmedTransitionMs = candidate.lastEventTimeMs
+
+                val evidence = "Index advanced from ${candidate.startFromIndex} to ${candidate.lastFromIndex}, " +
+                        "netDy=${candidate.netDisplacement}px, duration=${duration}ms, scrolls=${candidate.scrollEventCount}, " +
+                        "contentChanges=${candidate.contentChangeCount}"
+                val reason = "Feed advancement confirmed by index change (${candidate.startFromIndex} -> ${candidate.lastFromIndex})"
+                lastDecisionSummary = "Burst #${candidate.burstId} CONFIRMED: Item index advanced (${candidate.startFromIndex} -> ${candidate.lastFromIndex})"
+
+                return DetectionResult.TransitionConfirmed(
+                    burstId = candidate.burstId,
+                    reason = reason,
+                    evidence = evidence
+                )
+            }
+        }
+
+        // ── Rules 4-7: Motion & Content Heuristics (When Container Index is Unavailable) ─
+
+        // Rule 4: Snap-back Reversal
         val hasReversal = candidate.isReversalDetected &&
                 candidate.reverseDisplacement >= 60 &&
                 candidate.reverseDisplacement >= (candidate.forwardDisplacement * REVERSAL_RATIO_THRESHOLD)
 
-        if (hasReversal) {
+        val netRatioReversal = candidate.grossDisplacement > 0 &&
+                candidate.reverseDisplacement >= 40 &&
+                abs(candidate.netDisplacement).toFloat() / candidate.grossDisplacement < 0.5f
+
+        if (hasReversal || netRatioReversal) {
             val reason = "Canceled gesture: Snap-back reversal detected (fwd=${candidate.forwardDisplacement}px, rev=${candidate.reverseDisplacement}px, net=${candidate.netDisplacement}px)"
             lastDecisionSummary = "Burst #${candidate.burstId} CANCELED: Snap-back (net=${candidate.netDisplacement}px)"
             return DetectionResult.TransitionCanceled(
@@ -368,38 +479,21 @@ class TikTokDetector {
             )
         }
 
-        // ── Rule 2: Insufficient net vertical displacement ───────────────────────
-        // If deltas are available and net displacement didn't cross threshold
+        // Rule 5: Insufficient Net Vertical Displacement
         if (candidate.grossDisplacement > 0 && abs(candidate.netDisplacement) < MIN_NET_VERTICAL_DISPLACEMENT) {
-            // Exception: if the container index explicitly advanced to a new item
-            val indexAdvanced = candidate.startFromIndex >= 0 &&
-                    candidate.lastFromIndex >= 0 &&
-                    candidate.lastFromIndex != candidate.startFromIndex
-
-            if (!indexAdvanced) {
-                val reason = "Canceled gesture: Insufficient net vertical displacement (${candidate.netDisplacement}px < ${MIN_NET_VERTICAL_DISPLACEMENT}px)"
-                lastDecisionSummary = "Burst #${candidate.burstId} CANCELED: Travel too small (${candidate.netDisplacement}px)"
-                return DetectionResult.TransitionCanceled(
-                    burstId = candidate.burstId,
-                    reason = reason
-                )
-            }
-        }
-
-        // ── Rule 3: Horizontal or diagonal abort ─────────────────────────────────
-        if (candidate.accumulatedDx > abs(candidate.netDisplacement) * 1.3 && candidate.accumulatedDx > 80) {
-            val reason = "Rejected: Horizontal displacement dominated (dx=${candidate.accumulatedDx}px, netDy=${candidate.netDisplacement}px)"
-            lastDecisionSummary = "Burst #${candidate.burstId} REJECTED: Horizontal motion"
+            val reason = "Canceled gesture: Insufficient net vertical displacement (${candidate.netDisplacement}px < ${MIN_NET_VERTICAL_DISPLACEMENT}px)"
+            lastDecisionSummary = "Burst #${candidate.burstId} CANCELED: Travel too small (${candidate.netDisplacement}px)"
             return DetectionResult.TransitionCanceled(
                 burstId = candidate.burstId,
                 reason = reason
             )
         }
 
-        // ── Rule 4: Zero feed content updates & index unchanged ──────────────────
-        // An advancing video triggers player UI & view subtree updates; an inert/canceled touch does not
-        if (candidate.contentChangeCount == 0 && candidate.startFromIndex == candidate.lastFromIndex) {
-            val reason = "Canceled gesture: No content updates or index change recorded"
+        // Rule 6: Zero Feed Content Updates
+        // A genuine video transition attaches and renders a new video player hierarchy.
+        // If zero content updates occurred, no new video was bound.
+        if (candidate.contentChangeCount == 0) {
+            val reason = "Canceled gesture: No content updates recorded"
             lastDecisionSummary = "Burst #${candidate.burstId} CANCELED: No feed content updates"
             return DetectionResult.TransitionCanceled(
                 burstId = candidate.burstId,
@@ -407,17 +501,14 @@ class TikTokDetector {
             )
         }
 
-        // ── All cancellation checks passed: Transition CONFIRMED! ────────────────
-        lastConfirmedTransitionMs = now
+        // ── Rule 7: Unidirectional Displacement with Corroborating Feed Changes ──
+        lastConfirmedTransitionMs = candidate.lastEventTimeMs
 
         val evidence = buildString {
             append("NetDy=${candidate.netDisplacement}px (fwd=${candidate.forwardDisplacement}, rev=${candidate.reverseDisplacement}), ")
             append("duration=${duration}ms, ")
             append("scrolls=${candidate.scrollEventCount}, ")
             append("contentChanges=${candidate.contentChangeCount}")
-            if (candidate.lastFromIndex >= 0) {
-                append(", index=${candidate.lastFromIndex}")
-            }
         }
 
         val reason = "Feed advancement confirmed for burst #${candidate.burstId} ($evidence)"

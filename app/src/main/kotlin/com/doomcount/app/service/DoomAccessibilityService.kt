@@ -101,6 +101,16 @@ class DoomAccessibilityService : AccessibilityService() {
                     _sessionStats.update { it.copy(clickEvents = it.clickEvents + 1) }
             }
 
+            // If a candidate burst has reached quiescence, settle it before evaluating new scroll burst
+            if (event.eventType == AccessibilityEvent.TYPE_VIEW_SCROLLED && tikTokDetector.hasActivePendingCandidate()) {
+                val eventTime = if (event.eventTime > 0) event.eventTime else System.currentTimeMillis()
+                val timeSinceLast = tikTokDetector.getTimeSinceLastScroll(eventTime)
+                if (timeSinceLast >= TikTokDetector.BURST_QUIESCENCE_MS) {
+                    val priorSettlement = tikTokDetector.settleActiveCandidate(eventTime)
+                    handleDetectionResult(priorSettlement, pkg)
+                }
+            }
+
             val result = tikTokDetector.evaluate(event)
             handleDetectionResult(result, pkg)
 
